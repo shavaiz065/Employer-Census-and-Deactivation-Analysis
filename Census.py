@@ -335,8 +335,7 @@ with tabs[1]:
             # Summary metrics for the date range
             col1, col2, col3 = st.columns(3)
             with col1:
-                total_files = int(
-                    df_census_range['filerecordbeforeprocessing'].sum()) if not df_census_range.empty else 0
+                total_files = len(df_census_range) if not df_census_range.empty else 0
                 st.metric("Total Files Processed", total_files)
             with col2:
                 total_completed = int(df_census_range['completed'].sum()) if not df_census_range.empty else 0
@@ -435,26 +434,176 @@ with tabs[1]:
 with tabs[2]:
     st.title("🔍 Employer Drilldown")
     if not census_df.empty and not deact_df.empty:
+        # Add date range filter at the top
+        st.subheader("Filters")
+        col1, col2 = st.columns(2)
+        with col1:
+            min_date = min(census_df['processstarttime'].min(), deact_df['recorddate'].min()).date()
+            max_date = max(census_df['processstarttime'].max(), deact_df['recorddate'].max()).date()
+            start_date = st.date_input(
+                "Start Date",
+                value=min_date,
+                min_value=min_date,
+                max_value=max_date
+            )
+        with col2:
+            end_date = st.date_input(
+                "End Date",
+                value=max_date,
+                min_value=min_date,
+                max_value=max_date
+            )
+
+        # Employer selection
         employer_list = sorted(census_df['employer'].dropna().unique())
         employer_selected = st.selectbox("Select Employer", ["All Employers"] + employer_list)
 
         if employer_selected != "All Employers":
-            emp_census = census_df[census_df['employer'] == employer_selected]
-            emp_deact = deact_df[deact_df['employername'] == employer_selected]
+            # Filter data by date range first
+            census_filtered = census_df[
+                (census_df['processstarttime'].dt.date >= start_date) &
+                (census_df['processstarttime'].dt.date <= end_date)
+                ]
+            deact_filtered = deact_df[
+                (deact_df['recorddate'].dt.date >= start_date) &
+                (deact_df['recorddate'].dt.date <= end_date)
+                ]
 
-            st.subheader("📈 Processing Pattern")
-            chart = px.scatter(emp_census, x='processstarttime', y='completed', color='error',
-                               title=f"Processing History for {employer_selected}")
-            st.plotly_chart(chart, use_container_width=True)
+            # Then filter by selected employer
+            emp_census = census_filtered[census_filtered['employer'] == employer_selected]
+            emp_deact = deact_filtered[deact_filtered['employername'] == employer_selected]
 
-            emp_census['processing_time_mins'] = (emp_census['processendtime'] - emp_census['processstarttime']).dt.total_seconds() / 60
-            st.write(emp_census[['processstarttime', 'processendtime', 'processing_time_mins']])
+            # ---------- PROCESSING OVERVIEW SECTION ----------
+            st.subheader(f"🔄 Processing Overview for {employer_selected}")
 
+            # Create columns for metrics
+            col1, col2, col3 = st.columns(3)
+            with col1:
+                st.metric("Total Records Processed",
+                          f"{emp_census['filerecordbeforeprocessing'].sum():,.0f}",
+                          help="Total records processed in selected date range")
+            with col2:
+                st.metric("Successfully Completed",
+                          f"{emp_census['completed'].sum():,.0f}",
+                          help="Records successfully processed")
+            with col3:
+                st.metric("Errors Encountered",
+                          f"{emp_census['error'].sum():,.0f}",
+                          help="Records with processing errors")
+
+            # Processing Timeline Section
+            st.subheader("📅 Processing Timeline")
+            if not emp_census.empty:
+                emp_census['processing_time_mins'] = (
+                        (emp_census['processendtime'] - emp_census['processstarttime']).dt.total_seconds() / 60
+                )
+
+                # Create a more structured visualization
+                col1, col2 = st.columns([2, 1])
+
+                with col1:
+                    # Heatmap-style visualization
+                    fig = px.scatter(
+                        emp_census,
+                        x='processstarttime',
+                        y='processing_time_mins',
+                        size='completed',
+                        color='error',
+                        hover_data=['filerecordbeforeprocessing', 'completed', 'error'],
+                        title=f"Processing Duration Heatmap ({start_date} to {end_date})",
+                        labels={
+                            'processstarttime': 'Processing Date',
+                            'processing_time_mins': 'Duration (minutes)'
+                        }
+                    )
+                    fig.update_layout(
+                        yaxis_title='Processing Duration (minutes)',
+                        xaxis_title='Date',
+                        hovermode='closest'
+                    )
+                    st.plotly_chart(fig, use_container_width=True)
+
+                with col2:
+                    # Summary statistics table
+                    st.markdown("**Processing Summary**")
+                    summary_data = {
+                        "Metric": ["Total Processes", "Avg Duration", "Max Duration", "Min Duration"],
+                        "Value": [
+                            len(emp_census),
+                            f"{emp_census['processing_time_mins'].mean():.1f} mins",
+                            f"{emp_census['processing_time_mins'].max():.1f} mins",
+                            f"{emp_census['processing_time_mins'].min():.1f} mins"
+                        ]
+                    }
+                    st.table(pd.DataFrame(summary_data))
+
+                    # Date-specific durations
+                    st.markdown("**Recent Processing Times**")
+                    recent_data = emp_census[['processstarttime', 'processing_time_mins']].sort_values(
+                        'processstarttime', ascending=False).head(5)
+                    recent_data['processstarttime'] = recent_data['processstarttime'].dt.strftime('%b %d')
+                    st.table(recent_data.rename(columns={
+                        'processstarttime': 'Date',
+                        'processing_time_mins': 'Duration (mins)'
+                    }))
+
+                # Optional: Add a small bar chart for duration visualization
+                if not emp_census.empty:
+                    st.markdown("### Performance Trend Analysis")
+
+                    # Weekly aggregation
+                    weekly = emp_census.set_index('processstarttime').resample('W').agg({
+                        'processing_time_mins': 'mean',
+                        'completed': 'sum',
+                        'error': 'sum'
+                    }).reset_index()
+
+                    tab1, tab2 = st.tabs(["Efficiency Trend", "Volume Trend"])
+
+                    with tab1:
+                        fig = px.line(
+                            weekly,
+                            x='processstarttime',
+                            y='processing_time_mins',
+                            title="Average Processing Time by Week",
+                            labels={'processstarttime': 'Week', 'processing_time_mins': 'Minutes'}
+                        )
+                        st.plotly_chart(fig, use_container_width=True)
+
+                    with tab2:
+                        fig = px.bar(
+                            weekly,
+                            x='processstarttime',
+                            y=['completed', 'error'],
+                            title="Processing Volume by Week",
+                            labels={'value': 'Records', 'variable': 'Type'}
+                        )
+                        st.plotly_chart(fig, use_container_width=True)
+
+                # Show date-filtered processing stats
+                st.write(f"Date Range: {start_date} to {end_date}")
+                st.write(f"Processing Events: {len(emp_census)}")
+                st.write(f"Avg Time: {emp_census['processing_time_mins'].mean():.1f} mins")
+
+            # ---- Deactivation Trend Section ----
             st.subheader("📉 Deactivation Trend")
             if not emp_deact.empty:
                 emp_deact['recorddate'] = pd.to_datetime(emp_deact['recorddate'])
-                line = px.line(emp_deact, x='recorddate', y='deactivations')
-                st.plotly_chart(line, use_container_width=True)
+
+                fig = px.line(
+                    emp_deact,
+                    x='recorddate',
+                    y='deactivations',
+                    title=f"Deactivations ({start_date} to {end_date})",
+                    markers=True
+                )
+                st.plotly_chart(fig, use_container_width=True)
+
+                # Date-filtered deactivation stats
+                st.write(f"Total Deactivations: {emp_deact['deactivations'].sum():,}")
+                st.write(f"Avg Daily: {emp_deact['deactivations'].mean():.1f}")
+            else:
+                st.info(f"No deactivation data for {employer_selected} in selected date range")
         else:
             st.info("Please select a specific employer to view detailed data.")
     else:
