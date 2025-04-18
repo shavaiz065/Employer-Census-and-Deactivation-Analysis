@@ -257,30 +257,40 @@ with tabs[0]:
                 use_container_width=True
             )
 
-        # ------ DOWNLOAD BUTTONS ------
-        st.subheader("Export Data")
-        col1, col2 = st.columns(2)
+            # ------ DOWNLOAD BUTTONS ------
+            st.subheader("Export Data")
+            col1, col2, col3 = st.columns(3)  # Changed to 3 columns
 
-        with col1:
-            if not census_filtered.empty:
-                st.download_button(
-                    label="Download Processing Data",
-                    data=census_filtered.to_csv(index=False),
-                    file_name="processing_data.csv",
-                    mime="text/csv"
-                )
+            with col1:
+                if not census_filtered.empty:
+                    st.download_button(
+                        label="Download Processing Data",
+                        data=census_filtered.to_csv(index=False),
+                        file_name="processing_data.csv",
+                        mime="text/csv"
+                    )
 
-        with col2:
-            if not deact_filtered.empty:
-                st.download_button(
-                    label="Download Deactivation Data",
-                    data=deact_filtered.to_csv(index=False),
-                    file_name="deactivation_data.csv",
-                    mime="text/csv"
-                )
+            with col2:
+                if not deact_filtered.empty:
+                    st.download_button(
+                        label="Download Deactivation Data",
+                        data=deact_filtered.to_csv(index=False),
+                        file_name="deactivation_data.csv",
+                        mime="text/csv"
+                    )
 
-    else:
-        st.info("Please upload both reports to view this section.")
+            with col3:
+                if not result_df.empty:
+                    st.download_button(
+                        label="Download Combined Report",
+                        data=result_df.to_csv(index=False),
+                        file_name=f"combined_report_{start_date}_to_{end_date}.csv",
+                        mime="text/csv",
+                        key="download_combined_report"  # Unique key
+                    )
+
+        else:
+            st.info("Please upload both reports to view this section.")
 
 # ---------- TAB 2: DATE INSIGHTS ----------
 with tabs[1]:
