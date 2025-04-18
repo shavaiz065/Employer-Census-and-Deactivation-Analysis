@@ -201,69 +201,58 @@ with tabs[0]:
         st.subheader("Recent Processing with Deactivations")
 
         if not census_filtered.empty and not deact_filtered.empty:
-            # Prepare data for merge
-            latest_dates = census_filtered.groupby('employer')['processendtime'].max().reset_index()
-            latest_dates['process_date'] = latest_dates['processendtime'].dt.date
+            # Get all processing records within date range (not just latest)
+            census_within_range = census_filtered[
+                (census_filtered['processendtime'].dt.date >= start_date) &
+                (census_filtered['processendtime'].dt.date <= end_date)
+                ]
 
-            deact_filtered['record_date'] = deact_filtered['recorddate'].dt.date
+            # Get deactivations within date range
+            deact_within_range = deact_filtered[
+                (deact_filtered['recorddate'].dt.date >= start_date) &
+                (deact_filtered['recorddate'].dt.date <= end_date)
+                ]
 
-            # Merge the data
+            # Merge processing with deactivations on same date
             merged = pd.merge(
-                latest_dates,
-                deact_filtered,
-                left_on=['employer', 'process_date'],
-                right_on=[deact_employer_col, 'record_date'],
+                census_within_range,
+                deact_within_range,
+                left_on=['employer', census_within_range['processendtime'].dt.date],
+                right_on=[deact_employer_col, deact_within_range['recorddate'].dt.date],
                 how='left'
             )
 
-            # Add census metrics
-            merged = pd.merge(
-                merged,
-                census_filtered[['employer', 'processendtime', 'filerecordbeforeprocessing', 'completed', 'error']],
-                on=['employer', 'processendtime'],
-                how='left'
-            )
-
-            # Clean up results and ensure numeric types
+            # Select and rename columns
             result_cols = [
                 'employer', 'processendtime', 'filerecordbeforeprocessing',
                 'completed', 'error', 'deactivations'
             ]
             result_df = merged[result_cols].rename(columns={
-                'processendtime': 'Last Process Time',
+                'processendtime': 'Process Time',
                 'filerecordbeforeprocessing': 'Records',
                 'completed': 'Completed',
                 'error': 'Errors',
                 'deactivations': 'Deactivations'
             })
 
-            # Convert numeric columns and handle missing values
+            # Convert numeric columns
             numeric_cols = ['Records', 'Completed', 'Errors', 'Deactivations']
             for col in numeric_cols:
                 result_df[col] = pd.to_numeric(result_df[col], errors='coerce').fillna(0)
 
-            # Format datetimes
-            result_df['Last Process Time'] = result_df['Last Process Time'].dt.strftime('%Y-%m-%d %H:%M:%S')
+            # Format datetime
+            result_df['Process Time'] = result_df['Process Time'].dt.strftime('%Y-%m-%d %H:%M:%S')
 
+            # Sort by employer and process time
+            result_df = result_df.sort_values(['employer', 'Process Time'])
 
-            # Safe formatting function
-            def safe_format(x):
-                try:
-                    if pd.isna(x):
-                        return ''
-                    num = float(x)
-                    return f"{num:,.0f}" if num.is_integer() else f"{num:,.2f}"
-                except (ValueError, TypeError):
-                    return str(x)
-
-
-            # Display table with safe formatting
+            # Display table
             st.dataframe(
                 result_df.style.format({
-                    'Records': safe_format,
-                    'Completed': safe_format,
-                    'Errors': safe_format,
-                    'Deactivations': safe_format
+                    'Records': '{:,.0f}',
+                    'Completed': '{:,.0f}',
+                    'Errors': '{:,.0f}',
+                    'Deactivations': '{:,.0f}'
                 }),
                 use_container_width=True
             )
