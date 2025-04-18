@@ -83,142 +83,215 @@ with tabs[0]:
     st.title("📋 Overview")
 
     if not census_df.empty and not deact_df.empty:
-        # Convert datetime columns at the start
+        # Convert datetime columns
         census_df['processstarttime'] = pd.to_datetime(census_df['processstarttime'], errors='coerce')
         census_df['processendtime'] = pd.to_datetime(census_df['processendtime'], errors='coerce')
+        deact_df['recorddate'] = pd.to_datetime(deact_df['recorddate'], errors='coerce')
 
-        # Compute Summary Statistics
-        total_records = len(census_df)
-        total_errors = census_df['error'].notnull().sum()
-        total_completed = census_df['completed'].notnull().sum()
-        total_completed_percentage = (total_completed / total_records) * 100 if total_records > 0 else 0
-        census_df['processing_time_mins'] = (census_df['processendtime'] - census_df[
-            'processstarttime']).dt.total_seconds() / 60
-        avg_processing_time = census_df['processing_time_mins'].mean()
+        # ------ FILTERS SECTION ------
+        st.subheader("Filters")
 
-        # Display Summary Statistics
+        # Date range filter
+        census_dates = census_df['processendtime'].dropna()
+        deact_dates = deact_df['recorddate'].dropna()
+
+        if not census_dates.empty and not deact_dates.empty:
+            min_date = min(census_dates.min(), deact_dates.min()).date()
+            max_date = max(census_dates.max(), deact_dates.max()).date()
+        else:
+            min_date = datetime.now().date() - timedelta(days=30)
+            max_date = datetime.now().date()
+
+        col1, col2 = st.columns(2)
+        with col1:
+            date_range = st.date_input(
+                "Date Range",
+                value=[min_date, max_date],
+                min_value=min_date,
+                max_value=max_date
+            )
+
+        # Employer filter
+        with col2:
+            census_employers = census_df['employer'].unique() if 'employer' in census_df.columns else []
+            deact_employer_col = 'employername' if 'employername' in deact_df.columns else 'employer'
+            deact_employers = deact_df[deact_employer_col].unique() if deact_employer_col in deact_df.columns else []
+
+            all_employers = sorted(list(set(census_employers).union(set(deact_employers))))
+            selected_employer = st.selectbox(
+                "Filter by Employer",
+                options=["All Employers"] + all_employers
+            )
+
+        # Apply date filtering
+        if len(date_range) == 2:
+            start_date, end_date = date_range
+            census_filtered = census_df[
+                (census_df['processendtime'].dt.date >= start_date) &
+                (census_df['processendtime'].dt.date <= end_date)
+                ]
+            deact_filtered = deact_df[
+                (deact_df['recorddate'].dt.date >= start_date) &
+                (deact_df['recorddate'].dt.date <= end_date)
+                ]
+        else:
+            census_filtered = census_df.copy()
+            deact_filtered = deact_df.copy()
+
+        # Apply employer filtering
+        if selected_employer != "All Employers":
+            census_filtered = census_filtered[census_filtered['employer'] == selected_employer]
+            deact_filtered = deact_filtered[deact_filtered[deact_employer_col] == selected_employer]
+
+        # ------ SUMMARY STATISTICS ------
         st.subheader("📊 Summary Statistics")
+
+        # Calculate stats on filtered data
+        total_records = len(census_filtered)
+        total_errors = census_filtered['error'].notna().sum() if 'error' in census_filtered.columns else 0
+        total_completed = census_filtered['completed'].notna().sum() if 'completed' in census_filtered.columns else 0
+        total_completed_percentage = (total_completed / total_records * 100) if total_records > 0 else 0
+
+        census_filtered['processing_time_mins'] = (
+                (census_filtered['processendtime'] - census_filtered['processstarttime']).dt.total_seconds() / 60
+        )
+        avg_processing_time = census_filtered['processing_time_mins'].mean()
+
+        # Display stats
         st.write(f"Total Records Processed: {total_records}")
         st.write(f"Total Errors: {total_errors}")
-        st.write(f"Percentage of Completed Records: {total_completed_percentage:.2f}%")
-        st.write(f"Average Processing Time per Employer (minutes): {avg_processing_time:.2f}")
+        st.write(f"Percentage Completed: {total_completed_percentage:.2f}%")
+        st.write(f"Avg Processing Time: {avg_processing_time:.2f} minutes")
 
-        # Group by employer and get the latest processing date
-        valid_census_df = census_df.dropna(
-            subset=['processendtime']) if 'processendtime' in census_df.columns else census_df
+        # ------ LATEST PROCESSING TABLE ------
+        st.subheader("Latest Processing by Employer")
 
-        if not valid_census_df.empty and 'employer' in valid_census_df.columns:
-            latest = valid_census_df.groupby('employer').agg({
-                'processendtime': lambda x: x.max(),  # Using lambda for robustness
+        if not census_filtered.empty and 'employer' in census_filtered.columns:
+            latest_processing = census_filtered.groupby('employer').agg({
+                'processendtime': 'max',
+                'filerecordbeforeprocessing': 'last',
                 'completed': 'last',
                 'error': 'last'
             }).reset_index()
 
-            # Display the dataframe
-            st.dataframe(latest[['employer', 'processendtime', 'completed', 'error']].style.format({
-                'processendtime': lambda x: x.strftime('%Y-%m-%d %H:%M:%S') if pd.notna(x) else 'Not Available'
-            }), use_container_width=True)
 
-            # Single download button for this section
-            if not latest.empty:
-                csv_data = latest.to_csv(index=False)
+            # Formatting function
+            def format_value(x):
+                if pd.isna(x):
+                    return 'N/A'
+                try:
+                    x = float(x)
+                    return f"{x:,.0f}" if x == int(x) else f"{x:,.2f}"
+                except (ValueError, TypeError):
+                    return str(x)
+
+
+            # Display table
+            st.dataframe(
+                latest_processing.style.format({
+                    'processendtime': lambda x: x.strftime('%Y-%m-%d %H:%M:%S') if pd.notna(x) else 'N/A',
+                    'filerecordbeforeprocessing': format_value,
+                    'completed': format_value,
+                    'error': format_value
+                }),
+                use_container_width=True
+            )
+
+        # ------ PROCESSING WITH DEACTIVATIONS TABLE ------
+        st.subheader("Recent Processing with Deactivations")
+
+        if not census_filtered.empty and not deact_filtered.empty:
+            # Prepare data for merge
+            latest_dates = census_filtered.groupby('employer')['processendtime'].max().reset_index()
+            latest_dates['process_date'] = latest_dates['processendtime'].dt.date
+
+            deact_filtered['record_date'] = deact_filtered['recorddate'].dt.date
+
+            # Merge the data
+            merged = pd.merge(
+                latest_dates,
+                deact_filtered,
+                left_on=['employer', 'process_date'],
+                right_on=[deact_employer_col, 'record_date'],
+                how='left'
+            )
+
+            # Add census metrics
+            merged = pd.merge(
+                merged,
+                census_filtered[['employer', 'processendtime', 'filerecordbeforeprocessing', 'completed', 'error']],
+                on=['employer', 'processendtime'],
+                how='left'
+            )
+
+            # Clean up results and ensure numeric types
+            result_cols = [
+                'employer', 'processendtime', 'filerecordbeforeprocessing',
+                'completed', 'error', 'deactivations'
+            ]
+            result_df = merged[result_cols].rename(columns={
+                'processendtime': 'Last Process Time',
+                'filerecordbeforeprocessing': 'Records',
+                'completed': 'Completed',
+                'error': 'Errors',
+                'deactivations': 'Deactivations'
+            })
+
+            # Convert numeric columns and handle missing values
+            numeric_cols = ['Records', 'Completed', 'Errors', 'Deactivations']
+            for col in numeric_cols:
+                result_df[col] = pd.to_numeric(result_df[col], errors='coerce').fillna(0)
+
+            # Format datetimes
+            result_df['Last Process Time'] = result_df['Last Process Time'].dt.strftime('%Y-%m-%d %H:%M:%S')
+
+
+            # Safe formatting function
+            def safe_format(x):
+                try:
+                    if pd.isna(x):
+                        return ''
+                    num = float(x)
+                    return f"{num:,.0f}" if num.is_integer() else f"{num:,.2f}"
+                except (ValueError, TypeError):
+                    return str(x)
+
+
+            # Display table with safe formatting
+            st.dataframe(
+                result_df.style.format({
+                    'Records': safe_format,
+                    'Completed': safe_format,
+                    'Errors': safe_format,
+                    'Deactivations': safe_format
+                }),
+                use_container_width=True
+            )
+
+        # ------ DOWNLOAD BUTTONS ------
+        st.subheader("Export Data")
+        col1, col2 = st.columns(2)
+
+        with col1:
+            if not census_filtered.empty:
                 st.download_button(
-                    label="Download Overview Report",
-                    data=csv_data,
-                    file_name="overview_report.csv",
-                    mime="text/csv",
-                    key="download_overview_main"
+                    label="Download Processing Data",
+                    data=census_filtered.to_csv(index=False),
+                    file_name="processing_data.csv",
+                    mime="text/csv"
                 )
+
+        with col2:
+            if not deact_filtered.empty:
+                st.download_button(
+                    label="Download Deactivation Data",
+                    data=deact_filtered.to_csv(index=False),
+                    file_name="deactivation_data.csv",
+                    mime="text/csv"
+                )
+
     else:
         st.info("Please upload both reports to view this section.")
-
-        # Ensure 'latest' DataFrame is calculated from the census data
-        if not census_df.empty:
-            # Group by employer and get the latest processing details
-            if 'processendtime' in census_df.columns:
-                census_df['processendtime'] = pd.to_datetime(census_df['processendtime'], errors='coerce')
-
-            # Drop NaT values to avoid issues with max operation
-            valid_census_df = census_df.dropna(
-                subset=['processendtime']) if 'processendtime' in census_df.columns else census_df
-
-            # Then perform the groupby operation
-            if not valid_census_df.empty and 'employer' in valid_census_df.columns:
-                latest = valid_census_df.groupby('employer').agg({
-                    'processendtime': lambda x: x.max(),  # Using lambda for robustness
-                    'completed': 'last',
-                    'error': 'last'
-                }).reset_index()
-            else:
-                latest = pd.DataFrame()  # Create empty DataFrame if no valid data
-
-            # Downloadable Report Button
-            if not latest.empty:
-                # Convert DataFrame to CSV
-                csv_data = latest.to_csv(index=False)
-
-                # Create a downloadable button
-                st.download_button(
-                    label="Download Overview Report",
-                    data=csv_data,
-                    file_name="overview_report.csv",
-                    mime="text/csv",
-                    key="download_overview_2"  # Add unique key
-                )
-            else:
-                st.info("No data available for download.")
-
-
-            # Ensure 'latest' DataFrame is calculated from the census data
-            if not census_df.empty:
-                # Group by employer and get the latest processing details
-                latest = census_df.groupby('employer').agg({
-                    'processendtime': 'max',
-                    'completed': 'last',
-                    'error': 'last'
-                }).reset_index()
-
-                # Check if 'latest' has data
-                if not latest.empty:
-                    # Convert DataFrame to CSV
-                    csv_data = latest.to_csv(index=False)
-
-                    # Provide the download button
-                    st.download_button(
-                        label="Download Overview Report",
-                        data=csv_data,
-                        file_name="overview_report.csv",
-                        mime="text/csv",
-                        key="download_overview_3"  # Add unique key
-                    )
-                else:
-                    st.info("No data available for download.")
-
-
-            # Ensure 'latest' DataFrame is calculated from the census data
-            if not census_df.empty:
-                # Group by employer and get the latest processing details
-                latest = census_df.groupby('employer').agg({
-                    'processendtime': 'max',
-                    'completed': 'last',
-                    'error': 'last'
-                }).reset_index()
-
-                # Downloadable Report Button
-                if not latest.empty:
-                    # Convert DataFrame to CSV
-                    csv_data = latest.to_csv(index=False)
-
-                    # Create a downloadable button
-                    st.download_button(
-                        label="Download Overview Report",
-                        data=csv_data,
-                        file_name="overview_report.csv",
-                        mime="text/csv",
-                        key="download_overview_4"  # Add unique key
-                    )
-                else:
-                    st.info("No data available for download.")
 
 # ---------- TAB 2: DATE INSIGHTS ----------
 with tabs[1]:
